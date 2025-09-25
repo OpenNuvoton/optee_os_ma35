@@ -102,8 +102,8 @@ static TEE_Result tsi_close_session(uint32_t types,
 static TEE_Result tsi_aes_run(uint32_t types,
 			      TEE_Param params[TEE_NUM_PARAMS])
 {
+	vaddr_t va = core_mmu_get_va(TSI_CMD_BUFF_BASE, MEM_AREA_RAM_SEC, TSI_CMD_BUFF_SIZE);
 	uint32_t  *reg_map;
-	uint32_t  reg_map_pa;    /* physical address of reg_map */
 	uint32_t  aes_ctl, aes_ksctl, sid, opmode;
 	int       keysz, cmd_ks;
 	bool      is_gcm;
@@ -117,7 +117,6 @@ static TEE_Result tsi_aes_run(uint32_t types,
 	}
 
 	reg_map = params[1].memref.buffer;
-	reg_map_pa = (uint32_t)virt_to_phys(reg_map);
 
 	sid = params[0].value.a;
 	aes_ctl = reg_map[AES_CTL / 4];
@@ -145,19 +144,19 @@ static TEE_Result tsi_aes_run(uint32_t types,
 		is_gcm = false;
 	}
 
-	cache_operation(TEE_CACHEFLUSH,
-			(void *)((uint64_t)reg_map + AES_IV(0)), 16);
+	memcpy((void *)va, (void *)((uint64_t)reg_map + AES_IV(0)), 16);
+	cache_operation(TEE_CACHEFLUSH,	(void *)va, 16);
 
-	ret = TSI_AES_Set_IV(sid, reg_map_pa + AES_IV(0));
+	ret = TSI_AES_Set_IV(sid, TSI_CMD_BUFF_BASE);
 	if (ret != ST_SUCCESS) {
 		EMSG("TSI_AES_Set_IV failed - %d [%d]\n", ret, sid);
 		return TEE_ERROR_CRYPTO_FAIL;
 	}
 
-	cache_operation(TEE_CACHEFLUSH,
-			(void *)((uint64_t)reg_map + AES_KEY(0)), 32);
+	memcpy((void *)va, (void *)((uint64_t)reg_map + AES_KEY(0)), 32);
+	cache_operation(TEE_CACHEFLUSH,	(void *)va, 32);
 
-	ret = TSI_AES_Set_Key(sid, keysz, reg_map_pa + AES_KEY(0));
+	ret = TSI_AES_Set_Key(sid, keysz, TSI_CMD_BUFF_BASE);
 	if (ret != ST_SUCCESS) {
 		EMSG("TSI_AES_Set_Key failed %d\n", ret);
 		return TEE_ERROR_CRYPTO_FAIL;
@@ -219,22 +218,21 @@ static TEE_Result tsi_aes_run(uint32_t types,
 	if (ret != ST_SUCCESS)
 		return TEE_ERROR_CRYPTO_FAIL;
 
-	cache_operation(TEE_CACHEINVALIDATE,
-			(void *)tsi_buff, sizeof(tsi_buff));
+	cache_operation(TEE_CACHEINVALIDATE, (void *)va, 64);
 
-	ret = TSI_Access_Feedback(sid, 1, 4, (uint32_t)virt_to_phys(tsi_buff));
+	ret = TSI_Access_Feedback(sid, 1, 4, TSI_CMD_BUFF_BASE);
 	if (ret != 0) {
 		EMSG("TSI_Access_Feedback failed ret = %d\n", ret);
 		return TEE_ERROR_CRYPTO_FAIL;
 	}
 
 	if (aes_ctl & AES_CTL_KOUTSWAP) {
-		uint32_t  *fdbck = tsi_buff;
+		uint32_t  *fdbck = (uint32_t *)va;
 
 		for (i = 0; i < 4; i++)
 			fdbck[i] = swab32(fdbck[i]);
 	}
-	memcpy(&reg_map[AES_FDBCK(0) / 4], (void *)tsi_buff, 16);
+	memcpy(&reg_map[AES_FDBCK(0) / 4], (void *)va, 16);
 
 	return TEE_SUCCESS;
 }
@@ -898,8 +896,6 @@ static TEE_Result invoke_command(void *pSessionContext __unused,
 				 TEE_Param pParams[TEE_NUM_PARAMS])
 {
 	int tsi_en;
-
-	FMSG("command entry point for pseudo-TA \"%s\"", PTA_NAME);
 
 #if defined(PLATFORM_FLAVOR_MA35D1)
 	vaddr_t sys_base = core_mmu_get_va(SYS_BASE, MEM_AREA_IO_SEC, SYS_REG_SIZE);

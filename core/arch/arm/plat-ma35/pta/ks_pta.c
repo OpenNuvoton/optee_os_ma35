@@ -497,6 +497,10 @@ static TEE_Result ma35_ks_revoke(uint32_t types, TEE_Param params[TEE_NUM_PARAMS
 {
 	vaddr_t   ks_base = core_mmu_get_va(KS_BASE, MEM_AREA_IO_SEC, KS_REG_SIZE);
 	TEE_Time  t_start;
+#if defined(PLATFORM_FLAVOR_MA35D1)
+	vaddr_t sys_base = core_mmu_get_va(SYS_BASE, MEM_AREA_IO_SEC, SYS_REG_SIZE);
+	int ret;
+#endif
 
 	if (types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
 				     TEE_PARAM_TYPE_NONE,
@@ -518,9 +522,6 @@ static TEE_Result ma35_ks_revoke(uint32_t types, TEE_Param params[TEE_NUM_PARAMS
 	}
 
 #if defined(PLATFORM_FLAVOR_MA35D1)
-	vaddr_t sys_base = core_mmu_get_va(SYS_BASE, MEM_AREA_IO_SEC, SYS_REG_SIZE);
-	int ret;
-
 	if (!(io_read32(sys_base + SYS_CHIPCFG) & TSIEN)) {
 		ret = TSI_KS_RevokeKey(params[0].value.a, params[0].value.b);
 		if (ret != ST_SUCCESS) {
@@ -565,6 +566,10 @@ static TEE_Result ma35_ks_revoke(uint32_t types, TEE_Param params[TEE_NUM_PARAMS
 static TEE_Result ma35_ks_remain(uint32_t types, TEE_Param params[TEE_NUM_PARAMS])
 {
 	vaddr_t   ks_base = core_mmu_get_va(KS_BASE, MEM_AREA_IO_SEC, KS_REG_SIZE);
+#if defined(PLATFORM_FLAVOR_MA35D1)
+	vaddr_t sys_base = core_mmu_get_va(SYS_BASE, MEM_AREA_IO_SEC, SYS_REG_SIZE);
+	int ret;
+#endif
 	uint32_t  reg_data;
 
 	if (types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_OUTPUT,
@@ -575,9 +580,6 @@ static TEE_Result ma35_ks_remain(uint32_t types, TEE_Param params[TEE_NUM_PARAMS
 	}
 
 #if defined(PLATFORM_FLAVOR_MA35D1)
-	vaddr_t sys_base = core_mmu_get_va(SYS_BASE, MEM_AREA_IO_SEC, SYS_REG_SIZE);
-	int ret;
-
 	if (!(io_read32(sys_base + SYS_CHIPCFG) & TSIEN)) {
 		ret = TSI_KS_GetRemainSize(&params[0].value.a);
 		if (ret != ST_SUCCESS) {
@@ -608,6 +610,10 @@ static TEE_Result ma35_otp_read(uint32_t types, TEE_Param params[TEE_NUM_PARAMS]
 	uint32_t  otp_addr, wcnt, i;
 	uint32_t  *key_buff;
 	TEE_Time  t_start;
+#if defined(PLATFORM_FLAVOR_MA35D1)
+	vaddr_t sys_base = core_mmu_get_va(SYS_BASE, MEM_AREA_IO_SEC, SYS_REG_SIZE);
+	int ret;
+#endif
 
 	if (types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
 				     TEE_PARAM_TYPE_MEMREF_INOUT,
@@ -628,9 +634,6 @@ static TEE_Result ma35_otp_read(uint32_t types, TEE_Param params[TEE_NUM_PARAMS]
 	cache_operation(TEE_CACHEINVALIDATE, key_buff, wcnt * 4);
 
 #if defined(PLATFORM_FLAVOR_MA35D1)
-	vaddr_t sys_base = core_mmu_get_va(SYS_BASE, MEM_AREA_IO_SEC, SYS_REG_SIZE);
-	int ret;
-
 	if (!(io_read32(sys_base + SYS_CHIPCFG) & TSIEN)) {
 		for (i = 0; i < wcnt; i ++) {
 			ret = TSI_OTP_Read(otp_addr + i * 4, &key_buff[i]);

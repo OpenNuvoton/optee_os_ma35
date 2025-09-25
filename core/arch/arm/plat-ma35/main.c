@@ -30,6 +30,7 @@ register_phys_mem_pgdir(MEM_AREA_IO_SEC, OTP_BASE, OTP_REG_SIZE);
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, CRYPTO_BASE, CRYPTO_REG_SIZE);
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, TSI_BASE, TSI_REG_SIZE);
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, WHC1_BASE, WHC1_REG_SIZE);
+register_phys_mem_pgdir(MEM_AREA_RAM_SEC, TSI_CMD_BUFF_BASE, TSI_CMD_BUFF_SIZE);
 
 #ifdef LOAD_TSI_PATCH
 #include "tsi_patch.c"
