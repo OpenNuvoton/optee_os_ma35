@@ -25,9 +25,6 @@
 #define nu_write_reg(reg, val)	io_write32(crypto_base + (reg), (val))
 #define nu_read_reg(reg)	io_read32(crypto_base + (reg))
 
-__aligned(64) static uint32_t param_block[16];
-__aligned(64) static uint32_t tsi_buff[16];
-
 static inline uint32_t swab32(uint32_t x)
 {
 	return  ((x & (uint32_t)0x000000ffUL) << 24) |
@@ -99,15 +96,16 @@ static TEE_Result tsi_close_session(uint32_t types,
 	return TEE_SUCCESS;
 }
 
-static TEE_Result tsi_aes_run(uint32_t types,
-			      TEE_Param params[TEE_NUM_PARAMS])
+static TEE_Result tsi_aes_run(uint32_t types, TEE_Param params[TEE_NUM_PARAMS])
 {
-	vaddr_t va = core_mmu_get_va(TSI_CMD_BUFF_BASE, MEM_AREA_RAM_SEC, TSI_CMD_BUFF_SIZE);
-	uint32_t  *reg_map;
-	uint32_t  aes_ctl, aes_ksctl, sid, opmode;
-	int       keysz, cmd_ks;
-	bool      is_gcm;
-	int       i, ret;
+	void *va_aes_buff = (void *)core_mmu_get_va(TSI_AES_BUFF_BASE, MEM_AREA_RAM_SEC, TSI_AES_BUFF_SIZE);
+	uint32_t *va_aes_parm = (uint32_t *)core_mmu_get_va(TSI_AES_PARAM_BASE, MEM_AREA_RAM_SEC, TSI_AES_PARAM_SIZE);
+	void *va_data_src, *va_data_dst;
+	uint32_t *reg_map;
+	uint32_t aes_ctl, aes_ksctl, aes_cnt, sid, opmode;
+	int keysz, cmd_ks;
+	bool is_gcm;
+	int i, ret;
 
 	if (types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
 				     TEE_PARAM_TYPE_MEMREF_INOUT,
@@ -135,28 +133,28 @@ static TEE_Result tsi_aes_run(uint32_t types,
 
 	if (opmode == AES_MODE_GCM || opmode == AES_MODE_CCM) {
 		is_gcm = true;
-		param_block[0] = reg_map[AES_GCM_IVCNT(0) / 4];
-		param_block[1] = reg_map[AES_GCM_ACNT(0) / 4];
-		param_block[2] = reg_map[AES_GCM_PCNT(0) / 4];
-		param_block[3] = reg_map[AES_SADDR / 4];
-		param_block[4] = reg_map[AES_DADDR / 4];
+		va_aes_parm[0] = reg_map[AES_GCM_IVCNT(0) / 4];
+		va_aes_parm[1] = reg_map[AES_GCM_ACNT(0) / 4];
+		va_aes_parm[2] = reg_map[AES_GCM_PCNT(0) / 4];
+		va_aes_parm[3] = TSI_AES_BUFF_BASE;
+		va_aes_parm[4] = TSI_AES_BUFF_BASE;
 	} else {
 		is_gcm = false;
 	}
 
-	memcpy((void *)va, (void *)((uint64_t)reg_map + AES_IV(0)), 16);
-	cache_operation(TEE_CACHEFLUSH,	(void *)va, 16);
+	memcpy(va_aes_buff, (void *)((uint64_t)reg_map + AES_IV(0)), 16);
+	cache_operation(TEE_CACHEFLUSH, va_aes_buff, 16);
 
-	ret = TSI_AES_Set_IV(sid, TSI_CMD_BUFF_BASE);
+	ret = TSI_AES_Set_IV(sid, TSI_AES_BUFF_BASE);
 	if (ret != ST_SUCCESS) {
 		EMSG("TSI_AES_Set_IV failed - %d [%d]\n", ret, sid);
 		return TEE_ERROR_CRYPTO_FAIL;
 	}
 
-	memcpy((void *)va, (void *)((uint64_t)reg_map + AES_KEY(0)), 32);
-	cache_operation(TEE_CACHEFLUSH,	(void *)va, 32);
+	memcpy(va_aes_buff, (void *)((uint64_t)reg_map + AES_KEY(0)), 32);
+	cache_operation(TEE_CACHEFLUSH, va_aes_buff, 32);
 
-	ret = TSI_AES_Set_Key(sid, keysz, TSI_CMD_BUFF_BASE);
+	ret = TSI_AES_Set_Key(sid, keysz, TSI_AES_BUFF_BASE);
 	if (ret != ST_SUCCESS) {
 		EMSG("TSI_AES_Set_Key failed %d\n", ret);
 		return TEE_ERROR_CRYPTO_FAIL;
@@ -181,58 +179,65 @@ static TEE_Result tsi_aes_run(uint32_t types,
 	if (ret != ST_SUCCESS)
 		return TEE_ERROR_CRYPTO_FAIL;
 
-	if (is_gcm) {
-		int  flush_len;
+	va_data_src = phys_to_virt(reg_map[AES_SADDR / 4], MEM_AREA_RAM_NSEC, 0x100000);
+	if (!va_data_src) {
+		EMSG("phys_to_virt() failed to map va_data_src for 0x%x", reg_map[AES_SADDR / 4]);
+		return TEE_ERROR_CRYPTO_FAIL;
+	}
 
-		flush_len = reg_map[AES_CNT / 4] +
+	va_data_dst = phys_to_virt(reg_map[AES_DADDR / 4], MEM_AREA_RAM_NSEC, 0x100000);
+	if (!va_data_dst) {
+		EMSG("phys_to_virt() failed to map va_data_dst for 0x%x", reg_map[AES_DADDR / 4]);
+		return TEE_ERROR_CRYPTO_FAIL;
+	}
+
+	aes_cnt = reg_map[AES_CNT / 4];
+	memcpy(va_aes_buff, va_data_src, aes_cnt);
+
+	if (is_gcm) {
+		int flush_len = reg_map[AES_CNT / 4] +
 			    reg_map[AES_GCM_IVCNT(0) / 4] +
 			    reg_map[AES_GCM_ACNT(0) / 4] +
 			    reg_map[AES_GCM_PCNT(0) / 4];
 
-		cache_operation(TEE_CACHEFLUSH,
-				(void *)((uint64_t)reg_map[AES_SADDR / 4]),
-				flush_len);
-		cache_operation(TEE_CACHEINVALIDATE,
-				(void *)((uint64_t)reg_map[AES_DADDR / 4]),
-				flush_len);
-		cache_operation(TEE_CACHEFLUSH,
-				(void *)((uint64_t)param_block), 32);
+		cache_operation(TEE_CACHEFLUSH, va_aes_buff, flush_len);
+		cache_operation(TEE_CACHEFLUSH, va_aes_parm, 32);
 
-		ret = TSI_AES_GCM_Run(sid,
-				      aes_ctl & AES_CTL_DMALAST ? 1 : 0,
-				      reg_map[AES_CNT / 4],
-				      (uint32_t)virt_to_phys(param_block));
+		ret = TSI_AES_GCM_Run(sid, aes_ctl & AES_CTL_DMALAST ? 1 : 0,
+				      aes_cnt, TSI_AES_PARAM_BASE);
+
+		cache_operation(TEE_CACHEINVALIDATE, va_aes_buff, flush_len);
+		memcpy(va_data_dst, va_aes_buff, aes_cnt);
+
 	} else {
-		cache_operation(TEE_CACHEFLUSH,
-				(void *)((uint64_t)reg_map[AES_SADDR / 4]),
-				reg_map[AES_CNT / 4]);
-		cache_operation(TEE_CACHEINVALIDATE,
-				(void *)((uint64_t)reg_map[AES_DADDR / 4]),
-				reg_map[AES_CNT / 4]);
-		ret = TSI_AES_Run(sid,
-				  aes_ctl & AES_CTL_DMALAST ? 1 : 0,
-				  reg_map[AES_CNT / 4], reg_map[AES_SADDR / 4],
-				  reg_map[AES_DADDR / 4]);
+		cache_operation(TEE_CACHEFLUSH, va_aes_buff, aes_cnt);
+
+		ret = TSI_AES_Run(sid, aes_ctl & AES_CTL_DMALAST ? 1 : 0,
+				  aes_cnt, TSI_AES_BUFF_BASE, TSI_AES_BUFF_BASE);
+
+		cache_operation(TEE_CACHEINVALIDATE, va_aes_buff, aes_cnt);
+		memcpy(va_data_dst, va_aes_buff, aes_cnt);
 	}
 
 	if (ret != ST_SUCCESS)
 		return TEE_ERROR_CRYPTO_FAIL;
 
-	cache_operation(TEE_CACHEINVALIDATE, (void *)va, 64);
 
-	ret = TSI_Access_Feedback(sid, 1, 4, TSI_CMD_BUFF_BASE);
+	cache_operation(TEE_CACHEINVALIDATE, va_aes_buff, 64);
+
+	ret = TSI_Access_Feedback(sid, 1, 4, TSI_AES_BUFF_BASE);
 	if (ret != 0) {
 		EMSG("TSI_Access_Feedback failed ret = %d\n", ret);
 		return TEE_ERROR_CRYPTO_FAIL;
 	}
 
 	if (aes_ctl & AES_CTL_KOUTSWAP) {
-		uint32_t  *fdbck = (uint32_t *)va;
+		uint32_t  *fdbck = (uint32_t *)va_aes_buff;
 
 		for (i = 0; i < 4; i++)
 			fdbck[i] = swab32(fdbck[i]);
 	}
-	memcpy(&reg_map[AES_FDBCK(0) / 4], (void *)va, 16);
+	memcpy(&reg_map[AES_FDBCK(0) / 4], va_aes_buff, 16);
 
 	return TEE_SUCCESS;
 }
@@ -341,11 +346,14 @@ static TEE_Result tsi_sha_start(uint32_t types,
 	return TEE_SUCCESS;
 }
 
-static TEE_Result tsi_sha_update(uint32_t types,
-				 TEE_Param params[TEE_NUM_PARAMS])
+static TEE_Result tsi_sha_update(uint32_t types, TEE_Param params[TEE_NUM_PARAMS])
 {
-	uint32_t  *reg_map;
-	uint32_t  ret;
+	void *va_sha_buff = (void *)core_mmu_get_va(TSI_SHA_BUFF_BASE, MEM_AREA_RAM_SEC, TSI_SHA_BUFF_SIZE);
+	uint32_t *reg_map;
+	uint32_t pa_data;
+	void *va_data;
+	uint32_t data_size;
+	int ret;
 
 	if (types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
 				     TEE_PARAM_TYPE_MEMREF_INOUT,
@@ -355,24 +363,33 @@ static TEE_Result tsi_sha_update(uint32_t types,
 	}
 	reg_map = params[1].memref.buffer;
 
-	cache_operation(TEE_CACHEFLUSH,
-			(void *)((uint64_t)reg_map[HMAC_SADDR / 4]),
-			reg_map[HMAC_DMACNT / 4]);
+	data_size = reg_map[HMAC_DMACNT / 4];
+	pa_data = (uint32_t)reg_map[HMAC_SADDR / 4];
 
-	ret = TSI_SHA_Update(params[0].value.a,      /* sid      */
-			reg_map[HMAC_DMACNT / 4],    /* data_cnt */
-			reg_map[HMAC_SADDR / 4]      /* src_addr */
-			);
+	va_data = phys_to_virt(pa_data, MEM_AREA_RAM_NSEC, 0x100000);
+	if (!va_data) {
+		EMSG("phys_to_virt() failed for pa=0x%x", pa_data);
+		return TEE_ERROR_CRYPTO_FAIL;
+	}
+
+	memcpy(va_sha_buff, va_data, data_size);
+	cache_operation(TEE_CACHEFLUSH, va_sha_buff, data_size);
+
+	ret = TSI_SHA_Update(params[0].value.a, data_size, TSI_SHA_BUFF_BASE);
 	if (ret != ST_SUCCESS)
 		return TEE_ERROR_CRYPTO_FAIL;
 
 	return TEE_SUCCESS;
 }
 
-static TEE_Result tsi_sha_final(uint32_t types,
-				TEE_Param params[TEE_NUM_PARAMS])
+static TEE_Result tsi_sha_final(uint32_t types, TEE_Param params[TEE_NUM_PARAMS])
 {
+	void *va_sha_buff = (void *)core_mmu_get_va(TSI_SHA_BUFF_BASE, MEM_AREA_RAM_SEC, TSI_SHA_BUFF_SIZE);
+	void *va_dgst = (void *)core_mmu_get_va(TSI_SHA_DGST_BASE, MEM_AREA_RAM_SEC, TSI_SHA_DGST_SIZE);
 	uint32_t  *reg_map;
+	paddr_t   pa_data;
+	vaddr_t   va_data;
+	uint32_t  data_size;
 	int       ret;
 
 	if (types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
@@ -383,19 +400,27 @@ static TEE_Result tsi_sha_final(uint32_t types,
 	}
 	reg_map = params[1].memref.buffer;
 
-	cache_operation(TEE_CACHEINVALIDATE,
-			(void *)tsi_buff, sizeof(tsi_buff));
+	data_size = reg_map[HMAC_DMACNT / 4];
+	pa_data = (paddr_t)reg_map[HMAC_SADDR / 4];
 
-	ret = TSI_SHA_Finish(params[0].value.a,           /* sid       */
-			params[0].value.b / 4,            /* wcnt      */
-			reg_map[HMAC_DMACNT / 4],         /* data_cnt  */
-			reg_map[HMAC_SADDR / 4],          /* src_addr  */
-			(uint32_t)virt_to_phys(tsi_buff)  /* dest_addr */
-			);
+	va_data = (vaddr_t)phys_to_virt(pa_data, MEM_AREA_RAM_NSEC, 0x100000);
+	if (!va_data) {
+		EMSG("phys_to_virt() failed for pa=0x%x", (uint32_t)pa_data);
+		return TEE_ERROR_CRYPTO_FAIL;
+	}
+
+	memcpy(va_sha_buff, (void *)va_data, data_size);
+	cache_operation(TEE_CACHEFLUSH, va_sha_buff, data_size);
+
+	cache_operation(TEE_CACHEINVALIDATE, va_dgst, TSI_SHA_DGST_SIZE);
+
+	ret = TSI_SHA_Finish(params[0].value.a, params[0].value.b / 4,
+			     data_size, TSI_SHA_BUFF_BASE, TSI_SHA_DGST_BASE);
 	if (ret != ST_SUCCESS)
 		return TEE_ERROR_CRYPTO_FAIL;
 
-	memcpy(&reg_map[HMAC_DGST(0) / 4], (void *)tsi_buff,  64);
+	memcpy(&reg_map[HMAC_DGST(0) / 4], va_dgst,  64);
+
 	return TEE_SUCCESS;
 }
 
