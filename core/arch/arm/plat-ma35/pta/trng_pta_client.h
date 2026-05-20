@@ -13,6 +13,7 @@
 #define TEE_ERROR_TRNG_GEN_NOISE	0x00000002
 #define TEE_ERROR_TRNG_COMMAND		0x00000003
 #define TEE_ERROR_TRNG_FAILED		0x00000004
+#define TEE_ERROR_TRNG_KS_FAILED	0x00000005
 
 /*
  * PTA_CMD_TRNG_INIT - Initialize TRNG hardware
@@ -44,5 +45,22 @@
  * TEE_ERROR_BAD_PARAMETERS - Incorrect input param
  */
 #define PTA_CMD_TRNG_READ		0x2
+
+/*
+ * PTA_CMD_TRNG_WRITE_KS - Write a TRNG-generated key to Key Store SRAM
+ *
+ * param[0] (inout value) - value.a: key store target engine on input
+ *                           value.a: key number on output
+ * param[1] unused
+ * param[2] unused
+ * param[3] unused
+ *
+ * Result:
+ * TEE_SUCCESS - Invoke command success
+ * TEE_ERROR_BAD_PARAMETERS - Incorrect input param or unsupported engine
+ * TEE_ERROR_TRNG_FAILED - Failed to generate TRNG data
+ * TEE_ERROR_TRNG_KS_FAILED - Failed to write the key to Key Store SRAM
+ */
+#define PTA_CMD_TRNG_WRITE_KS		0x3
 
 #endif /* __TRNG_PTA_CLIENT_H */

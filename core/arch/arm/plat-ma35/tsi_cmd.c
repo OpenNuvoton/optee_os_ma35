@@ -477,9 +477,9 @@ int TSI_PRNG_GenTo_KS_SRAM(uint32_t owner, int is_ecdsa, int is_ecdh,
 	int        ret;
 
 	memset(&req, 0, sizeof(req));
-	req.cmd[0] = (CMD_PRNG_GEN_KS_SRAM << 16);
-	req.cmd[1] = (owner << PRNG_KSCTL_OWNER_POS) |
-			(keysz >> KS_META_SIZE_POS);
+	req.cmd[0] = (CMD_EXT_PRNG_GEN_KS << 16);
+	req.cmd[1] = (owner << PRNG_KSCTL_OWNER_POS) | (keysz >> KS_META_SIZE_POS);
+
 	if (is_ecdh)
 		req.cmd[1] |= PRNG_KSCTL_ECDH;
 	else if (is_ecdsa)
@@ -488,7 +488,10 @@ int TSI_PRNG_GenTo_KS_SRAM(uint32_t owner, int is_ecdsa, int is_ecdh,
 	ret = tsi_send_command_and_wait(&req, CMD_TIME_OUT_2S);
 	if (ret == 0)
 		*key_num = req.ack[1];
-	return 0;
+	else
+		*key_num = -1;
+
+	return ret;
 }
 
 /*
