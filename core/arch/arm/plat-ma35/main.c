@@ -88,6 +88,7 @@ int ma35d1_tsi_init(void)
 			}
 		}
 #endif
+		TSI_Monitor_Set(0x28025000, 0x1000, 120, &ret);
 	}
 	return 0;
 }

@@ -214,6 +214,7 @@ int TSI_Get_Version(uint32_t *ver_code);
 int TSI_Reset(void);
 int TSI_Config_UART(uint32_t line, uint32_t baud);
 int TSI_Set_Clock(int pllsrc, int clksel);
+int TSI_Monitor_Set(uint32_t base, uint32_t size, int interval, int *id);
 int TSI_Load_Image(uint32_t base, uint32_t size);
 int TSI_Open_Session(int class_code, int *session_id);
 int TSI_Close_Session(int class_code, int session_id);

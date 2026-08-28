@@ -248,6 +248,23 @@ int TSI_Set_Clock(int pllsrc, int clksel)
 	return 0;
 }
 
+int TSI_Monitor_Set(uint32_t base, uint32_t size, int interval, int *id)
+{
+	TSI_REQ_T  req;
+	int        ret;
+
+	memset(&req, 0, sizeof(req));
+	req.cmd[0] = (CMD_TSI_MONITOR_SET << 16);
+	req.cmd[1] = interval & 0xffff;
+	req.cmd[2] = base;
+	req.cmd[3] = size;
+	ret = tsi_send_command_and_wait(&req, CMD_TIME_OUT_2S);
+	if (ret != 0)
+		return ret;
+	*id = req.ack[1] & 0xff;
+	return 0;
+}
+
 /*
  * @brief    Load a patch image into TSI.
  * @param[in]  base      Physical address of the TSI image.
