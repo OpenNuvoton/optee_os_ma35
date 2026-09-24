@@ -127,7 +127,7 @@
  * PTA_CMD_OTP_READ - Read OTP
  *
  * param[0] (in value) - value.a: OTP address
- * param[1] (inout memref) - memref.size: word count of OTP key
+ * param[1] (inout memref) - memref.size: OTP buffer size in bytes
  *                           memref.buffer: key buffer
  * param[2] unused
  * param[3] unused
@@ -138,5 +138,21 @@
  * TEE_ERROR_OTP_FAIL - read OTP failed
  */
 #define PTA_CMD_OTP_READ		0x12
+
+/*
+ * PTA_CMD_OTP_PROGRAM - Program a version-counter OTP bit
+ *
+ * param[0] (in value) - value.a: aligned OTP byte address
+ *                       value.b: one-bit program mask
+ * param[1] unused
+ * param[2] unused
+ * param[3] unused
+ *
+ * Result:
+ * TEE_SUCCESS - Invoke command success
+ * TEE_ERROR_OTP_INVALID - Incorrect address or program mask
+ * TEE_ERROR_OTP_FAIL - Program OTP failed
+ */
+#define PTA_CMD_OTP_PROGRAM		0x13
 
 #endif /* __KS_PTA_CLIENT_H */

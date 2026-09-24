@@ -623,15 +623,17 @@ static TEE_Result ma35_otp_read(uint32_t types, TEE_Param params[TEE_NUM_PARAMS]
 	}
 
 	otp_addr = params[0].value.a;
-	wcnt = params[1].memref.size;
+	wcnt = params[1].memref.size / sizeof(uint32_t);
 	key_buff = params[1].memref.buffer;
 
-	if ((otp_addr < 0x100) || (otp_addr + wcnt * 4 > 0x1D0)) {
+	if ((otp_addr < 0x100) || (otp_addr >= 0x1D0) ||
+	    (otp_addr & 3) || !wcnt || (params[1].memref.size & 3) ||
+	    wcnt > 128 || !key_buff || wcnt > (0x1D0 - otp_addr) / 4) {
 		EMSG("OTP read over range: 0x%x + 0x%x\n", otp_addr, wcnt);
 		return TEE_ERROR_OTP_INVALID;
 	}
 
-	cache_operation(TEE_CACHEINVALIDATE, key_buff, wcnt * 4);
+	cache_operation(TEE_CACHEINVALIDATE, key_buff, params[1].memref.size);
 
 #if defined(PLATFORM_FLAVOR_MA35D1)
 	if (!(io_read32(sys_base + SYS_CHIPCFG) & TSIEN)) {
@@ -668,6 +670,41 @@ static TEE_Result ma35_otp_read(uint32_t types, TEE_Param params[TEE_NUM_PARAMS]
 	return TEE_SUCCESS;
 }
 
+static TEE_Result ma35_otp_program(uint32_t types,
+				   TEE_Param params[TEE_NUM_PARAMS])
+{
+#if defined(PLATFORM_FLAVOR_MA35D1)
+	vaddr_t sys_base;
+#endif
+	uint32_t addr;
+	uint32_t bit;
+
+	if (types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
+				     TEE_PARAM_TYPE_NONE,
+				     TEE_PARAM_TYPE_NONE,
+				     TEE_PARAM_TYPE_NONE))
+		return TEE_ERROR_BAD_PARAMETERS;
+
+	addr = params[0].value.a;
+	bit = params[0].value.b;
+	if ((addr & 3) || !bit || (bit & (bit - 1)) ||
+	    !((addr >= 0x120 && addr <= 0x148) ||
+	      (addr >= 0x1A4 && addr <= 0x1CC)))
+		return TEE_ERROR_OTP_INVALID;
+
+#if defined(PLATFORM_FLAVOR_MA35D1)
+	sys_base = core_mmu_get_va(SYS_BASE, MEM_AREA_IO_SEC, SYS_REG_SIZE);
+	if (io_read32(sys_base + SYS_CHIPCFG) & TSIEN)
+		return TEE_ERROR_NOT_SUPPORTED;
+
+	if (TSI_OTP_Program(addr, bit) != ST_SUCCESS)
+		return TEE_ERROR_OTP_FAIL;
+	return TEE_SUCCESS;
+#else
+	return TEE_ERROR_NOT_SUPPORTED;
+#endif
+}
+
 static TEE_Result invoke_command(void *pSessionContext __unused,
 				 uint32_t nCommandID, uint32_t nParamTypes,
 				 TEE_Param pParams[TEE_NUM_PARAMS])
@@ -698,6 +735,9 @@ static TEE_Result invoke_command(void *pSessionContext __unused,
 
 	case PTA_CMD_OTP_READ:
 		return ma35_otp_read(nParamTypes, pParams);
+
+	case PTA_CMD_OTP_PROGRAM:
+		return ma35_otp_program(nParamTypes, pParams);
 
 	default:
 		break;
