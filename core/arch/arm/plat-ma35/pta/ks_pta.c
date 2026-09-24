@@ -673,6 +673,10 @@ static TEE_Result ma35_otp_read(uint32_t types, TEE_Param params[TEE_NUM_PARAMS]
 static TEE_Result ma35_otp_program(uint32_t types,
 				   TEE_Param params[TEE_NUM_PARAMS])
 {
+	vaddr_t otp_base = core_mmu_get_va(OTP_BASE, MEM_AREA_IO_SEC,
+					   OTP_REG_SIZE);
+	TEE_Time t_start;
+	uint32_t status;
 #if defined(PLATFORM_FLAVOR_MA35D1)
 	vaddr_t sys_base;
 #endif
@@ -694,15 +698,33 @@ static TEE_Result ma35_otp_program(uint32_t types,
 
 #if defined(PLATFORM_FLAVOR_MA35D1)
 	sys_base = core_mmu_get_va(SYS_BASE, MEM_AREA_IO_SEC, SYS_REG_SIZE);
-	if (io_read32(sys_base + SYS_CHIPCFG) & TSIEN)
-		return TEE_ERROR_NOT_SUPPORTED;
-
-	if (TSI_OTP_Program(addr, bit) != ST_SUCCESS)
-		return TEE_ERROR_OTP_FAIL;
-	return TEE_SUCCESS;
-#else
-	return TEE_ERROR_NOT_SUPPORTED;
+	if (!(io_read32(sys_base + SYS_CHIPCFG) & TSIEN)) {
+		if (TSI_OTP_Program(addr, bit) != ST_SUCCESS)
+			return TEE_ERROR_OTP_FAIL;
+		return TEE_SUCCESS;
+	}
 #endif
+
+	io_write32(OTP_STS, OTP_STS_PFF | OTP_STS_ADDRFF | OTP_STS_CMDFF);
+	io_write32(OTP_ADDR, addr);
+	io_write32(OTP_DATA, bit);
+	io_write32(OTP_CTL, OTP_CMD_PROGRAM | OTP_CTL_START);
+
+	tee_time_get_sys_time(&t_start);
+	while (io_read32(OTP_STS) & OTP_STS_BUSY) {
+		if (is_timeout(&t_start, 500) == true)
+			return TEE_ERROR_OTP_FAIL;
+	}
+
+	status = io_read32(OTP_STS);
+	if (status & (OTP_STS_PFF | OTP_STS_ADDRFF | OTP_STS_CMDFF)) {
+		EMSG("OTP program failed, status = 0x%x\n", status);
+		io_write32(OTP_STS,
+			   OTP_STS_PFF | OTP_STS_ADDRFF | OTP_STS_CMDFF);
+		return TEE_ERROR_OTP_FAIL;
+	}
+
+	return TEE_SUCCESS;
 }
 
 static TEE_Result invoke_command(void *pSessionContext __unused,
