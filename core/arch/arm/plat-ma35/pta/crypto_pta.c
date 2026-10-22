@@ -15,6 +15,7 @@
 #include <tsi_cmd.h>
 #include <io.h>
 #include <string.h>
+#include <util.h>
 #include <crypto_pta.h>
 #include <crypto_pta_client.h>
 
@@ -102,9 +103,9 @@ static TEE_Result tsi_aes_run(uint32_t types, TEE_Param params[TEE_NUM_PARAMS])
 	uint32_t *va_aes_parm = (uint32_t *)core_mmu_get_va(TSI_AES_PARAM_BASE, MEM_AREA_RAM_SEC, TSI_AES_PARAM_SIZE);
 	void *va_data_src, *va_data_dst;
 	uint32_t *reg_map;
-	uint32_t aes_ctl, aes_ksctl, aes_cnt, sid, opmode;
+	uint32_t aes_ctl, aes_ksctl, aes_cnt, out_len, sid, opmode;
 	int keysz, cmd_ks;
-	bool is_gcm;
+	bool is_gcm, gcm_cascade;
 	int i, ret;
 
 	if (types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
@@ -142,6 +143,30 @@ static TEE_Result tsi_aes_run(uint32_t types, TEE_Param params[TEE_NUM_PARAMS])
 		is_gcm = false;
 	}
 
+	/*
+	 * The data is processed in place in the TSI AES buffer. The last DMA
+	 * of a cascaded GCM/CCM operation appends the tag to its output.
+	 */
+	gcm_cascade = is_gcm && (aes_ctl & AES_CTL_DMACSCAD);
+	aes_cnt = reg_map[AES_CNT / 4];
+	out_len = aes_cnt;
+	if (gcm_cascade && (aes_ctl & AES_CTL_DMALAST))
+		out_len += 16;
+	if (aes_cnt > TSI_AES_BUFF_SIZE || out_len > TSI_AES_BUFF_SIZE) {
+		EMSG("AES data count %u exceeds the TSI buffer\n", aes_cnt);
+		return TEE_ERROR_BAD_PARAMETERS;
+	}
+
+	/* TSI use FDBCK DMA, force swap here */
+	aes_ctl |= AES_CTL_KINSWAP | AES_CTL_KOUTSWAP;
+
+	/*
+	 * A cascaded GCM/CCM DMA continues the state of the session; setting
+	 * the IV, key or mode again would restart the operation.
+	 */
+	if (gcm_cascade)
+		goto run;
+
 	memcpy(va_aes_buff, (void *)((uint64_t)reg_map + AES_IV(0)), 16);
 	cache_operation(TEE_CACHEFLUSH, va_aes_buff, 16);
 
@@ -160,9 +185,6 @@ static TEE_Result tsi_aes_run(uint32_t types, TEE_Param params[TEE_NUM_PARAMS])
 		return TEE_ERROR_CRYPTO_FAIL;
 	}
 
-	/* TSI use FDBCK DMA, force swap here */
-	aes_ctl |= AES_CTL_KINSWAP | AES_CTL_KOUTSWAP;
-
 	ret = TSI_AES_Set_Mode(sid,                           /* sid      */
 			(aes_ctl & AES_CTL_KINSWAP) ? 1 : 0,  /* kinswap  */
 			0,                                    /* koutswap */
@@ -179,6 +201,7 @@ static TEE_Result tsi_aes_run(uint32_t types, TEE_Param params[TEE_NUM_PARAMS])
 	if (ret != ST_SUCCESS)
 		return TEE_ERROR_CRYPTO_FAIL;
 
+run:
 	va_data_src = phys_to_virt(reg_map[AES_SADDR / 4], MEM_AREA_RAM_NSEC, 0x100000);
 	if (!va_data_src) {
 		EMSG("phys_to_virt() failed to map va_data_src for 0x%x", reg_map[AES_SADDR / 4]);
@@ -191,14 +214,16 @@ static TEE_Result tsi_aes_run(uint32_t types, TEE_Param params[TEE_NUM_PARAMS])
 		return TEE_ERROR_CRYPTO_FAIL;
 	}
 
-	aes_cnt = reg_map[AES_CNT / 4];
 	memcpy(va_aes_buff, va_data_src, aes_cnt);
 
 	if (is_gcm) {
-		int flush_len = reg_map[AES_CNT / 4] +
+		uint64_t flush_len = (uint64_t)aes_cnt +
 			    reg_map[AES_GCM_IVCNT(0) / 4] +
 			    reg_map[AES_GCM_ACNT(0) / 4] +
 			    reg_map[AES_GCM_PCNT(0) / 4];
+
+		flush_len = MIN(flush_len, (uint64_t)TSI_AES_BUFF_SIZE);
+		flush_len = MAX(flush_len, (uint64_t)out_len);
 
 		cache_operation(TEE_CACHEFLUSH, va_aes_buff, flush_len);
 		cache_operation(TEE_CACHEFLUSH, va_aes_parm, 32);
@@ -207,7 +232,7 @@ static TEE_Result tsi_aes_run(uint32_t types, TEE_Param params[TEE_NUM_PARAMS])
 				      aes_cnt, TSI_AES_PARAM_BASE);
 
 		cache_operation(TEE_CACHEINVALIDATE, va_aes_buff, flush_len);
-		memcpy(va_data_dst, va_aes_buff, aes_cnt);
+		memcpy(va_data_dst, va_aes_buff, out_len);
 
 	} else {
 		cache_operation(TEE_CACHEFLUSH, va_aes_buff, aes_cnt);
@@ -247,7 +272,7 @@ static TEE_Result ma35_aes_run(uint32_t types,
 {
 	vaddr_t   crypto_base = core_mmu_get_va(CRYPTO_BASE, MEM_AREA_IO_SEC, CRYPTO_REG_SIZE);
 	uint32_t  *reg_map;
-	uint32_t  i;
+	uint32_t  i, aes_ctl, opmode;
 	TEE_Time  t_start;
 
 	if (types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
@@ -258,6 +283,18 @@ static TEE_Result ma35_aes_run(uint32_t types,
 	}
 
 	reg_map = params[1].memref.buffer;
+	aes_ctl = reg_map[AES_CTL / 4];
+
+	/*
+	 * Cascaded GCM/CCM needs the engine feedback buffer, which is not
+	 * implemented here: only a single-DMA GCM/CCM operation is supported.
+	 */
+	opmode = (aes_ctl & AES_CTL_OPMODE_MASK) >> AES_CTL_OPMODE_OFFSET;
+	if ((opmode == AES_MODE_GCM || opmode == AES_MODE_CCM) &&
+	    (aes_ctl & (AES_CTL_DMACSCAD | AES_CTL_DMALAST)) != AES_CTL_DMALAST) {
+		EMSG("cascaded AES GCM/CCM is not supported without TSI\n");
+		return TEE_ERROR_NOT_SUPPORTED;
+	}
 
 	tee_time_get_sys_time(&t_start);
 	while ((nu_read_reg(AES_STS) & AES_STS_BUSY) ||
@@ -290,7 +327,7 @@ static TEE_Result ma35_aes_run(uint32_t types,
 	nu_write_reg(AES_DADDR, reg_map[AES_DADDR / 4]);
 	nu_write_reg(AES_CNT, reg_map[AES_CNT / 4]);
 
-	nu_write_reg(AES_CTL, reg_map[AES_CTL / 4]);
+	nu_write_reg(AES_CTL, aes_ctl);
 
 	tee_time_get_sys_time(&t_start);
 	while ((nu_read_reg(AES_STS) & AES_STS_BUSY) ||
